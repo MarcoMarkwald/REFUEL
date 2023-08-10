@@ -1,5 +1,5 @@
 import dgl
-from dgl.data import CoraFullDataset
+from dgl.data import CoraFullDataset, FraudYelpDataset
 
 import torch
 import torch.nn.functional as F
@@ -13,6 +13,7 @@ from sklearn.model_selection import KFold
 
 import models
 import utils
+
 
 def train(g, train_data, test_data, rulevector, num_heads, att_nodes, outdim):
     #train the GAT model
@@ -69,8 +70,7 @@ def train(g, train_data, test_data, rulevector, num_heads, att_nodes, outdim):
                                  labels[test_data].to(torch.device("cpu")), digits=6, output_dict=True, zero_division=1)
 
 
-
-def ellipticapproach(num_heads, att_nodes, outdim, treedepth, num_trees):
+def refuelelliptic(num_heads, att_nodes, outdim, treedepth, num_trees):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Read Elliptic Dataset
@@ -136,7 +136,7 @@ def ellipticapproach(num_heads, att_nodes, outdim, treedepth, num_trees):
     utils.getClassificationMetrics(metrics, file)
 
 
-def coraapproach(file, num_heads, att_nodes, outdim, treedepth, num_trees):
+def refuelcora(file, num_heads, att_nodes, outdim, treedepth, num_trees):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     data = CoraFullDataset()
@@ -183,6 +183,54 @@ def coraapproach(file, num_heads, att_nodes, outdim, treedepth, num_trees):
     utils.getClassificationMetrics(metrics, file)
 
 
+def fraudyelprefuel(file, num_heads, att_nodes, outdim, treedepth, num_trees):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(device)
+
+    data = FraudYelpDataset()
+    g = data[0]
+    g = g.edge_type_subgraph(['net_rur'])
+    g = dgl.add_self_loop(g)
+    g = g.to(device)
+
+    metrics = []
+    arrnumdecisions = []
+
+    features = g.ndata['feature']
+    label = g.ndata['label']
+
+    kf = KFold(n_splits=10, shuffle=True)
+    kf.get_n_splits(features)
+
+    for train_index, test_index in kf.split(features):
+        train_mask = torch.zeros(features.shape[0], dtype=torch.bool)
+        test_mask = torch.zeros(features.shape[0], dtype=torch.bool)
+        for index in train_index:
+            train_mask[index] = True
+        for index in test_index:
+            test_mask[index] = True
+
+        print("Find rules")
+
+        decisions, numdecisions = utils.allrules(features[train_mask], label[train_mask], treedepth, num_trees)
+
+        arrnumdecisions.append(numdecisions)
+
+        decisions = utils.rulerefinement(decisions)
+
+        print("Adding rule vectors now")
+
+        rulevector = []
+        for index, f in enumerate(features):
+            # use only split nodes
+            rulevector.append(torch.Tensor(utils.addsplitnodes(f, decisions)))
+
+        # Graph Attention Network including rules
+        metrics.append(train(g, train_mask, test_mask, torch.stack(rulevector), num_heads, att_nodes, outdim))
+
+    utils.getClassificationMetrics(metrics, file)
+
+
 if __name__ == '__main__':
     file = "results.txt"
 
@@ -190,21 +238,23 @@ if __name__ == '__main__':
     numheads = 4
 
     ellipticatt = 16
-    ellipticoutdim = 32
+    ellipticoutdim = 64
     elliptictreedepth = 5
 
     with open(file, "a") as f:
-        f.write("Num Heads: " + str(numheads) + ", Attention Nodes: " + str(ellipticatt) + ", Embedding Dim: " + str(
-            ellipticoutdim) + ", Tree Depth: " + str(elliptictreedepth) + ", #Tree: " + str(numtrees) + "\n")
+        f.write("Num Heads: " + str(numheads) + ", GAT Attention Nodes: " + str(16) + ", Embedding Dim: " + str(
+            64) + ", Tree Depth: " + str(5) + ", #Tree: " + str(numtrees) + "\n")
 
-    ellipticapproach(numheads, 16, 64, 5, numtrees)
-
-    coraatt = 16
-    coraoutdim = 32
-    coratreedepth = 2
+    refuelelliptic(numheads, 16, 64, 5, numtrees)
 
     with open(file, "a") as f:
-        f.write("Num Heads: " + str(numheads) + ", Attention Nodes: " + str(16) + ", Embedding Dim: " + str(
-            32) + ", Tree Depth: " + str(5) + ", #Tree: " + str(100) + "\n")
+        f.write("Num Heads: " + str(numheads) + ", GAT Attention Nodes: " + str(16) + ", Embedding Dim: " + str(
+            64) + ", Tree Depth: " + str(5) + ", #Tree: " + str(100) + "\n")
 
-    coraapproach(numheads, 16, 32, 5, 100)
+    refuelcora(numheads, 16, 64, 5, numtrees)
+
+    with open(file, "a") as f:
+        f.write("Num Heads: " + str(numheads) + ", GAT Attention Nodes: " + str(16) + ", Embedding Dim: " + str(
+            64) + ", Tree Depth: " + str(5) + ", #Tree: " + str(100) + "\n")
+
+    fraudyelprefuel(file, numheads, 16, 64, 5, numtrees)
