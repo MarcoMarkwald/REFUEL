@@ -28,5 +28,5 @@ Now it is possible to run:
 
 python3 main.py
 
-You will get results for the Cora and Elliptic datasets for the parameters stated in the paper.
+You will get results for the FraudYelp, Cora and Elliptic datasets for the parameters stated in the paper.
 
